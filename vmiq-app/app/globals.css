@@ -1,0 +1,174 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:           #f5f6fa;
+  --surface:      #ffffff;
+  --surface2:     #f0f2f7;
+  --border:       #e2e6ef;
+  --text:         #1a1d2e;
+  --text2:        #5a607a;
+  --text3:        #9ba3bf;
+  --blue:         #2563eb;
+  --blue-light:   #eff6ff;
+  --green:        #16a34a;
+  --green-light:  #f0fdf4;
+  --amber:        #d97706;
+  --amber-light:  #fffbeb;
+  --red:          #dc2626;
+  --red-light:    #fef2f2;
+  --purple:       #7c3aed;
+  --purple-light: #f5f3ff;
+  --radius:       8px;
+  --shadow:       0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.06);
+  --shadow-md:    0 4px 6px rgba(0,0,0,.07), 0 2px 4px rgba(0,0,0,.06);
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI',
+               Roboto, 'Helvetica Neue', Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* ── Layout ─────────────────────────────────────────────────── */
+.shell        { display: flex; min-height: 100vh; }
+.sidebar      { width: 220px; background: var(--surface);
+                border-right: 1px solid var(--border);
+                display: flex; flex-direction: column;
+                position: fixed; top: 0; left: 0;
+                height: 100vh; z-index: 10; }
+.main         { margin-left: 220px; flex: 1;
+                display: flex; flex-direction: column; }
+.topbar       { background: var(--surface);
+                border-bottom: 1px solid var(--border);
+                padding: 0 24px; height: 56px;
+                display: flex; align-items: center;
+                justify-content: space-between;
+                position: sticky; top: 0; z-index: 9; }
+.page         { padding: 24px; flex: 1; }
+
+/* ── Sidebar ────────────────────────────────────────────────── */
+.sidebar-logo { padding: 20px 16px 16px;
+                font-size: 18px; font-weight: 700;
+                color: var(--blue);
+                border-bottom: 1px solid var(--border); }
+.sidebar-logo span { color: var(--text2); font-weight: 400;
+                     font-size: 11px; display: block; margin-top: 2px; }
+.sidebar-nav  { flex: 1; padding: 12px 8px; overflow-y: auto; }
+.nav-section  { font-size: 10px; font-weight: 600; color: var(--text3);
+                text-transform: uppercase; letter-spacing: .06em;
+                padding: 8px 8px 4px; margin-top: 8px; }
+.nav-item     { display: flex; align-items: center; gap: 10px;
+                padding: 8px 10px; border-radius: var(--radius);
+                color: var(--text2); text-decoration: none;
+                font-size: 13px; font-weight: 500;
+                transition: all .15s; cursor: pointer; }
+.nav-item:hover   { background: var(--bg); color: var(--text); }
+.nav-item.active  { background: var(--blue-light); color: var(--blue); }
+.nav-icon         { width: 16px; height: 16px; flex-shrink: 0; }
+
+/* ── Cards ──────────────────────────────────────────────────── */
+.card         { background: var(--surface); border-radius: var(--radius);
+                border: 1px solid var(--border);
+                box-shadow: var(--shadow); }
+.card-pad     { padding: 20px; }
+.card-header  { display: flex; align-items: center;
+                justify-content: space-between;
+                padding: 16px 20px;
+                border-bottom: 1px solid var(--border); }
+.card-title   { font-size: 13px; font-weight: 600; color: var(--text); }
+.card-body    { padding: 20px; }
+
+/* ── Stat cards ─────────────────────────────────────────────── */
+.stat-grid    { display: grid;
+                grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+                gap: 16px; margin-bottom: 24px; }
+.stat-card    { background: var(--surface); border-radius: var(--radius);
+                border: 1px solid var(--border);
+                box-shadow: var(--shadow); padding: 20px; }
+.stat-label   { font-size: 12px; color: var(--text2);
+                font-weight: 500; margin-bottom: 8px; }
+.stat-value   { font-size: 28px; font-weight: 700; color: var(--text);
+                line-height: 1; }
+.stat-sub     { font-size: 12px; color: var(--text3); margin-top: 6px; }
+.stat-icon    { width: 36px; height: 36px; border-radius: 8px;
+                display: flex; align-items: center; justify-content: center;
+                margin-bottom: 12px; }
+.icon-blue    { background: var(--blue-light); color: var(--blue); }
+.icon-green   { background: var(--green-light); color: var(--green); }
+.icon-amber   { background: var(--amber-light); color: var(--amber); }
+.icon-red     { background: var(--red-light); color: var(--red); }
+.icon-purple  { background: var(--purple-light); color: var(--purple); }
+
+/* ── Page layout helpers ────────────────────────────────────── */
+.grid-2       { display: grid;
+                grid-template-columns: 1fr 1fr; gap: 20px; }
+.grid-3       { display: grid;
+                grid-template-columns: 1fr 1fr 1fr; gap: 20px; }
+.mb-6         { margin-bottom: 24px; }
+.page-title   { font-size: 20px; font-weight: 700; color: var(--text); }
+.page-sub     { font-size: 13px; color: var(--text2); margin-top: 2px; }
+
+/* ── Table ──────────────────────────────────────────────────── */
+.table-wrap   { overflow-x: auto; border-radius: var(--radius);
+                border: 1px solid var(--border); }
+table         { width: 100%; border-collapse: collapse;
+                font-size: 13px; }
+thead         { background: var(--surface2); }
+th            { padding: 10px 14px; text-align: left;
+                font-weight: 600; font-size: 12px; color: var(--text2);
+                border-bottom: 1px solid var(--border);
+                white-space: nowrap; }
+td            { padding: 10px 14px;
+                border-bottom: 1px solid var(--border);
+                vertical-align: middle; }
+tr:last-child td { border-bottom: none; }
+tr:hover td   { background: var(--surface2); }
+
+/* ── Badges ─────────────────────────────────────────────────── */
+.badge        { display: inline-flex; align-items: center;
+                padding: 2px 8px; border-radius: 4px;
+                font-size: 11px; font-weight: 600;
+                white-space: nowrap; }
+.badge-green  { background: var(--green-light); color: var(--green); }
+.badge-red    { background: var(--red-light); color: var(--red); }
+.badge-amber  { background: var(--amber-light); color: var(--amber); }
+.badge-blue   { background: var(--blue-light); color: var(--blue); }
+.badge-gray   { background: var(--surface2); color: var(--text2); }
+
+/* ── Pill status ────────────────────────────────────────────── */
+.status-dot   { width: 7px; height: 7px; border-radius: 50%;
+                display: inline-block; margin-right: 5px; }
+.dot-green    { background: var(--green); }
+.dot-red      { background: var(--red); }
+.dot-amber    { background: var(--amber); }
+.dot-gray     { background: var(--text3); }
+
+/* ── Topbar ─────────────────────────────────────────────────── */
+.topbar-title { font-weight: 600; font-size: 15px; }
+.topbar-right { display: flex; align-items: center; gap: 12px; }
+.last-updated { font-size: 12px; color: var(--text2); }
+.refresh-btn  { display: flex; align-items: center; gap: 6px;
+                padding: 6px 12px; border-radius: var(--radius);
+                border: 1px solid var(--border);
+                background: var(--surface); color: var(--text2);
+                font-size: 12px; cursor: pointer;
+                transition: all .15s; }
+.refresh-btn:hover { background: var(--bg); color: var(--text); }
+
+/* ── Progress bar ───────────────────────────────────────────── */
+.progress-bar { height: 6px; background: var(--surface2);
+                border-radius: 3px; overflow: hidden; }
+.progress-fill { height: 100%; border-radius: 3px;
+                 transition: width .3s; }
+
+/* ── Pipeline status ────────────────────────────────────────── */
+.pipeline-row { display: flex; align-items: center;
+                justify-content: space-between;
+                padding: 10px 0;
+                border-bottom: 1px solid var(--border); }
+.pipeline-row:last-child { border-bottom: none; }
+.pipeline-name { font-weight: 600; font-size: 13px; }
+.pipeline-time { font-size: 11px; color: var(--text3); margin-top: 2px; }
