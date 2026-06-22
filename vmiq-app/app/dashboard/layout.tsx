@@ -14,6 +14,7 @@ export default function DashboardLayout({
       <div className="main">
         {children}
       </div>
+      <Chatbot />
     </div>
   )
 }
