@@ -1,0 +1,411 @@
+# ════════════════════════════════════════════════════════════
+# vmiq-postgres — PostgreSQL 15 + TimescaleDB
+# Namespace: vmiq-data
+#
+# Fresh deploy — no nodeSelector, no hostPath, Ceph RBD storage.
+# Schema auto-applies on first boot via /docker-entrypoint-initdb.d
+# (only runs once, on an empty PGDATA directory — exactly our case
+# since the PVC was deleted).
+#
+# Credentials come from vmiq-postgres-secret — see bootstrap-secrets.sh
+# ════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: vmiq-postgres
+  namespace: vmiq-data
+  labels:
+    app: vmiq-postgres
+    app.kubernetes.io/part-of: evit
+spec:
+  serviceName: vmiq-postgres-svc
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vmiq-postgres
+  template:
+    metadata:
+      labels:
+        app: vmiq-postgres
+    spec:
+      # No nodeSelector, no hostPath SCC, no hardcoded runAsUser —
+      # OCP assigns UID from the namespace range automatically on
+      # Ceph RBD volumes.
+      containers:
+        - name: postgres
+          image: timescale/timescaledb:2.13.0-pg15
+          ports:
+            - containerPort: 5432
+              name: postgres
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: vmiq-postgres-secret
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: vmiq-postgres-secret
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: vmiq-postgres-secret
+                  key: POSTGRES_PASSWORD
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          args:
+            - postgres
+            - -c
+            - shared_buffers=768MB
+            - -c
+            - effective_cache_size=2GB
+            - -c
+            - work_mem=32MB
+            - -c
+            - maintenance_work_mem=256MB
+            - -c
+            - max_connections=100
+            - -c
+            - shared_preload_libraries=timescaledb
+            - -c
+            - timescaledb.telemetry_level=off
+            - -c
+            - log_min_duration_statement=1000
+            - -c
+            - wal_level=replica
+            - -c
+            - checkpoint_completion_target=0.9
+          resources:
+            requests:
+              cpu: "1000m"
+              memory: "2Gi"
+            limits:
+              cpu: "2000m"
+              memory: "3Gi"
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+            - name: postgres-init
+              mountPath: /docker-entrypoint-initdb.d
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "vmiquser", "-d", "vmiq"]
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "vmiquser", "-d", "vmiq"]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 3
+      volumes:
+        - name: postgres-data
+          persistentVolumeClaim:
+            claimName: vmiq-postgres-pvc
+        - name: postgres-init
+          configMap:
+            name: vmiq-postgres-initdb
+
+---
+# ── Ceph RBD PVC ───────────────────────────────────────────────
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vmiq-postgres-pvc
+  namespace: vmiq-data
+  labels:
+    app: vmiq-postgres
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ocs-storagecluster-ceph-rbd
+  resources:
+    requests:
+      storage: 50Gi
+
+---
+# ── Headless service for StatefulSet DNS ────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: vmiq-postgres-svc
+  namespace: vmiq-data
+  labels:
+    app: vmiq-postgres
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    app: vmiq-postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+      name: postgres
+
+---
+# ════════════════════════════════════════════════════════════
+# Init SQL — runs ONCE on first startup (empty PGDATA only)
+# Consolidated FINAL schema matching exactly what the v14
+# dashboard queries, ETL jobs, and reconciliation expect.
+# ════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vmiq-postgres-initdb
+  namespace: vmiq-data
+  labels:
+    app: vmiq-postgres
+data:
+  01-extensions.sql: |
+    CREATE EXTENSION IF NOT EXISTS timescaledb;
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+
+  02-schema.sql: |
+    -- ── Estates ────────────────────────────────────────────
+    CREATE TABLE IF NOT EXISTS estates (
+        id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        name        TEXT NOT NULL UNIQUE,
+        description TEXT,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    -- ── vCenters registry ──────────────────────────────────
+    -- category: 'ITCC' | 'Legacy' — drives dashboard filtering
+    CREATE TABLE IF NOT EXISTS vcenters (
+        id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        name            TEXT NOT NULL,
+        fqdn            TEXT,
+        short_name      TEXT,
+        datacenter      TEXT,
+        environment     TEXT,
+        estate_id       UUID REFERENCES estates(id),
+        category        TEXT NOT NULL DEFAULT 'Legacy',
+        created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_vcenters_category ON vcenters(category);
+    CREATE INDEX IF NOT EXISTS idx_vcenters_estate   ON vcenters(estate_id);
+
+    -- ── Daily snapshot per vCenter (root of all inventory) ──
+    CREATE TABLE IF NOT EXISTS vcenter_snapshots (
+        id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        vcenter_id      UUID NOT NULL REFERENCES vcenters(id),
+        collected_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        status          TEXT NOT NULL DEFAULT 'processing',
+        vm_count        INT DEFAULT 0,
+        host_count      INT DEFAULT 0,
+        cluster_count   INT DEFAULT 0,
+        source_file     TEXT,
+        error_message   TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_snapshots_vcenter   ON vcenter_snapshots(vcenter_id);
+    CREATE INDEX IF NOT EXISTS idx_snapshots_collected ON vcenter_snapshots(collected_at);
+
+    -- ── Clusters ─────────────────────────────────────────────
+    CREATE TABLE IF NOT EXISTS clusters (
+        id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        snapshot_id     UUID NOT NULL REFERENCES vcenter_snapshots(id) ON DELETE CASCADE,
+        vcenter_id      UUID NOT NULL,
+        name            TEXT NOT NULL,
+        cpu_total_mhz   INT,
+        mem_total_mb    BIGINT,
+        host_count      INT,
+        vm_count        INT
+    );
+    CREATE INDEX IF NOT EXISTS idx_clusters_snapshot ON clusters(snapshot_id);
+
+    -- ── ESXi hosts ───────────────────────────────────────────
+    CREATE TABLE IF NOT EXISTS esx_hosts (
+        id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        snapshot_id         UUID NOT NULL REFERENCES vcenter_snapshots(id) ON DELETE CASCADE,
+        cluster_id          UUID REFERENCES clusters(id),
+        name                TEXT NOT NULL,
+        esxi_version        TEXT,
+        esxi_build          TEXT,
+        model               TEXT,
+        vendor              TEXT,
+        cpu_sockets         INT,
+        cpu_cores           INT,
+        cpu_threads         INT,
+        mem_total_mb        BIGINT,
+        powerstate          TEXT,
+        connection_state    TEXT,
+        is_in_maintenance   BOOLEAN DEFAULT FALSE,
+        is_intel_cpu        BOOLEAN DEFAULT TRUE,
+        mgmt_ip             TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_hosts_snapshot ON esx_hosts(snapshot_id);
+    CREATE INDEX IF NOT EXISTS idx_hosts_cluster  ON esx_hosts(cluster_id);
+
+    -- ── Virtual machines ─────────────────────────────────────
+    CREATE TABLE IF NOT EXISTS virtual_machines (
+        id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        snapshot_id     UUID NOT NULL REFERENCES vcenter_snapshots(id) ON DELETE CASCADE,
+        host_id         UUID REFERENCES esx_hosts(id),
+        cluster_id      UUID REFERENCES clusters(id),
+        name            TEXT NOT NULL,
+        powerstate      TEXT,
+        os_type         TEXT,
+        os_fullname     TEXT,
+        vcpus           INT,
+        mem_mb          BIGINT,
+        disk_total_gb   NUMERIC(12,2),
+        ip_address      TEXT,
+        tools_status    TEXT,
+        tools_version   TEXT,
+        hw_version      TEXT,
+        has_snapshots   BOOLEAN DEFAULT FALSE,
+        has_rdm         BOOLEAN DEFAULT FALSE,
+        has_usb         BOOLEAN DEFAULT FALSE,
+        has_cdrom       BOOLEAN DEFAULT FALSE,
+        is_suspended    BOOLEAN DEFAULT FALSE,
+        disk_mode       TEXT,
+        net_adapter     TEXT,
+        annotation      TEXT,
+        created_date    TIMESTAMPTZ,
+        collected_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_vms_snapshot   ON virtual_machines(snapshot_id);
+    CREATE INDEX IF NOT EXISTS idx_vms_host       ON virtual_machines(host_id);
+    CREATE INDEX IF NOT EXISTS idx_vms_cluster    ON virtual_machines(cluster_id);
+    CREATE INDEX IF NOT EXISTS idx_vms_name       ON virtual_machines(lower(name));
+    CREATE INDEX IF NOT EXISTS idx_vms_powerstate ON virtual_machines(powerstate);
+
+    -- ── Datastores ───────────────────────────────────────────
+    CREATE TABLE IF NOT EXISTS datastores (
+        id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        snapshot_id     UUID NOT NULL REFERENCES vcenter_snapshots(id) ON DELETE CASCADE,
+        name            TEXT NOT NULL,
+        type            TEXT,
+        capacity_gb     NUMERIC(12,2),
+        free_gb         NUMERIC(12,2),
+        used_pct        NUMERIC(5,2),
+        vm_count        INT
+    );
+    CREATE INDEX IF NOT EXISTS idx_ds_snapshot ON datastores(snapshot_id);
+
+    -- ── CMDB daily snapshot (one row per CSV load) ──────────
+    CREATE TABLE IF NOT EXISTS cmdb_snapshots (
+        id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        run_date        DATE NOT NULL,
+        source          TEXT,
+        fetched_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        record_count    INT DEFAULT 0,
+        status          TEXT NOT NULL DEFAULT 'processing'
+    );
+    CREATE INDEX IF NOT EXISTS idx_cmdb_snap_date ON cmdb_snapshots(run_date);
+
+    -- ── CMDB CI records — matches server_cmdb.csv columns ───
+    CREATE TABLE IF NOT EXISTS cmdb_ci_records (
+        id                     UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        snapshot_id            UUID NOT NULL REFERENCES cmdb_snapshots(id) ON DELETE CASCADE,
+
+        sys_id                 TEXT NOT NULL,
+        ci_name                TEXT NOT NULL,
+        ci_class               TEXT,
+        category               TEXT,
+        subcategory            TEXT,
+
+        status                 TEXT,
+        sub_status             TEXT,
+        hardware_status        TEXT,
+        environment            TEXT,
+        is_virtual             BOOLEAN DEFAULT TRUE,
+
+        ip_address             TEXT,
+        fqdn                   TEXT,
+
+        os_name                TEXT,
+        os_version             TEXT,
+
+        cpu_count              INT,
+        cpu_core_count         INT,
+        ram_mb                 INT,
+
+        serial_number          TEXT,
+        location               TEXT,
+        component_criticality  TEXT,
+
+        business_owner         TEXT,
+        it_owner               TEXT,
+        managed_by             TEXT,
+        support_group          TEXT,
+
+        discovery_source       TEXT,
+        last_discovered        TIMESTAMPTZ,
+
+        created_at_source      TIMESTAMPTZ,
+        updated_at_source      TIMESTAMPTZ,
+        decommission_date      TIMESTAMPTZ,
+
+        CONSTRAINT uq_cmdb_ci UNIQUE (snapshot_id, sys_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_cmdb_ci_snapshot ON cmdb_ci_records(snapshot_id);
+    CREATE INDEX IF NOT EXISTS idx_cmdb_ci_name     ON cmdb_ci_records(lower(ci_name));
+    CREATE INDEX IF NOT EXISTS idx_cmdb_ci_status   ON cmdb_ci_records(status);
+    CREATE INDEX IF NOT EXISTS idx_cmdb_ci_env      ON cmdb_ci_records(environment);
+
+    -- ── Reconciliation results ──────────────────────────────
+    -- Only 'vmware_only' and 'drift_detected' rows stored —
+    -- clean matches are not persisted.
+    CREATE TABLE IF NOT EXISTS cmdb_drift_results (
+        id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        run_date         DATE NOT NULL,
+        vm_snapshot_id   UUID REFERENCES vcenter_snapshots(id),
+        cmdb_snapshot_id UUID REFERENCES cmdb_snapshots(id),
+
+        match_status     TEXT NOT NULL,
+
+        vm_id            UUID REFERENCES virtual_machines(id),
+        cmdb_ci_id       UUID REFERENCES cmdb_ci_records(id),
+
+        drift_fields     JSONB,
+        drift_severity   TEXT NOT NULL,
+
+        created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_drift_run_date ON cmdb_drift_results(run_date);
+    CREATE INDEX IF NOT EXISTS idx_drift_status   ON cmdb_drift_results(match_status);
+    CREATE INDEX IF NOT EXISTS idx_drift_severity ON cmdb_drift_results(drift_severity);
+    CREATE INDEX IF NOT EXISTS idx_drift_vm       ON cmdb_drift_results(vm_id);
+    CREATE INDEX IF NOT EXISTS idx_drift_ui ON cmdb_drift_results(run_date, drift_severity)
+        WHERE match_status IN ('vmware_only', 'drift_detected');
+
+    -- ── Pipeline run audit log ───────────────────────────────
+    CREATE TABLE IF NOT EXISTS pipeline_run_log (
+        id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        run_date        DATE NOT NULL,
+        pipeline        TEXT NOT NULL,
+        status          TEXT NOT NULL,
+        started_at      TIMESTAMPTZ NOT NULL,
+        finished_at     TIMESTAMPTZ,
+        records_in      INT,
+        records_out     INT,
+        error_message   TEXT,
+        metadata        JSONB
+    );
+    CREATE INDEX IF NOT EXISTS idx_pipeline_run_date ON pipeline_run_log(run_date);
+
+    -- NOTE: No seed data inserted. The RVTools ETL writer auto-creates
+    -- estates and vcenters on first run (upsert by name). After the
+    -- first successful ETL, re-run your ITCC/Legacy category UPDATE
+    -- statements — categories were lost when the old DB was deleted.
+
+  03-timescale.sql: |
+    -- Convert virtual_machines to a TimescaleDB hypertable,
+    -- partitioned by collected_at (30-day chunks).
+    SELECT create_hypertable(
+        'virtual_machines',
+        'collected_at',
+        chunk_time_interval => INTERVAL '30 days',
+        if_not_exists => TRUE
+    );
+
+    ALTER TABLE virtual_machines SET (
+        timescaledb.compress,
+        timescaledb.compress_segmentby = 'snapshot_id'
+    );
+    SELECT add_compression_policy('virtual_machines', INTERVAL '90 days');
