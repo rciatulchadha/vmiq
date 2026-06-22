@@ -1,6 +1,6 @@
 # ════════════════════════════════════════════════════════════
 # vmiq-postgres — PostgreSQL 15 + TimescaleDB
-# Namespace: vmiq-data
+# Namespace: vmiq-data.
 #
 # Fresh deploy — no nodeSelector, no hostPath, Ceph RBD storage.
 # Schema auto-applies on first boot via /docker-entrypoint-initdb.d
